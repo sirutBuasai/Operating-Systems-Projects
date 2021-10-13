@@ -1,439 +1,285 @@
-// Adam Yang CS 3013 Project 4
+// CS-3013 Assignment 4
+// By Sirut Buasai
+// sbuasai2@wpi.edu
 
 #include <iostream>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <ctype.h>
+#include <fcntl.h>
 #include <string.h>
 #include <sys/wait.h>
-#include <sys/time.h>
-#include <sys/resource.h>
-#include <sys/types.h>
 #include <sys/stat.h>
-#include <typeinfo>
-#include <fcntl.h>
-#include <semaphore.h>
-#include <queue>
 
 using namespace std;
 
-#define MAX_BYTE 1024
-#define TRUE 1
-#define FALSE 0
-#define MAX_QUEUE_SIZE 32
-#define MAX_NUM_THREADS 15
+#define MAX_BYTE_READ 1024
+#define MAX_QUEUE 32
+#define MAX_THREADS 15
 
-/* g++ -o proj4 proj4.cpp -lpthread */
+/* ------------------------------------------- Global Variables ------------------------------------------- */
+bool mutex;
+pthread_t thread_arr[MAX_THREADS] = {0};
+pthread_t thread_queue[MAX_QUEUE];
+char file_arr[MAX_THREADS][64];
+int file_idx = 0;
+int q_front = 0;
+int q_rear = MAX_QUEUE - 1;
+int q_size = 0;
+int bad_files = 0;
+int directories = 0;
+int regular_files = 0;
+int special_files = 0;
+int regular_files_size = 0;
+int text_files = 0;
+int text_files_size = 0;
 
-/******************************* Global Variables *******************************/
-int mutex;
-bool serialMode;
-int num_allowed_threads;
+/* ------------------------------------------- Queue ------------------------------------------- */
 
-int num_bad_files = 0;
-int num_directories = 0;
-int num_regular_files = 0;
-int num_special_files = 0;
-int total_bytes_reg_files = 0;
-int num_reg_files_just_text = 0;
-int total_bytes_text_file = 0;
+bool is_empt() {
+    return (q_size == 0);
+}
 
-pthread_t thrIDArray[MAX_NUM_THREADS] = {0};
-char fileName_Array[MAX_NUM_THREADS][40];
-int fileIndex = 0;
+bool is_full() {
+    return (q_size == MAX_QUEUE);
+}
 
-pthread_t thrIDQueue[MAX_QUEUE_SIZE];
-int queueFront = 0;
-int queueBack = MAX_QUEUE_SIZE - 1;
-int queueSize = 0;
-
-
-
-/**************************** Function Prototypes ****************************/
-void print_help(void);
-bool isNumber(string s);
-void print_results(void);
-void BeginRegion(void);
-void EndRegion(void);
-int openFile(char *fileName);
-void defaultFunction(char *fileName);
-void *threadFunction(void *arg);
-int isFull(void);
-int isEmpty(void);
-void queueEnqueue(pthread_t *ptr_thrID);
-bool queueDequeue(pthread_t *ptr_thrID);
-
-
-
-
-int main(int argc, char *argv[]) {
-    int num_active_threads = 0;
-
-    // Checks the validity of the input arguments
-    if(argc == 2) {
-        serialMode = true;
-    }
-    else if((argc == 4) && (strcmp(argv[2], "thread") == 0)) {
-        serialMode = false;
-        if(!isNumber(argv[3])) {
-            cout << "Fourth Argument must be valid integer" << endl;
-            cout.flush();
-            return 0;
-        }
-        num_allowed_threads = atoi(argv[3]);
-
-        if((num_allowed_threads < 1) || (num_allowed_threads > MAX_NUM_THREADS)) {
-            cout << "Number of threads must be between 1 and 15" << endl;
-            cout.flush();
-            return 0;
-        }
-
+void enqueue(pthread_t *ptr_thrID) {
+    if(is_full()) {
+        cerr << "Queue is full" << endl;
+        cerr.flush();
     }
     else {
-        cout << "Invalid Arguments" << endl;
-        cout.flush();
-        print_help();
-        return 0;
+        q_rear = (q_rear + 1) % MAX_QUEUE;
+        thread_queue[q_rear] = (*ptr_thrID);
+        q_size++;
     }
-
-    // Open list of file names
-    FILE* file = fopen("fileList.txt", "r");
-    if(file == NULL) {
-        cout << "File Open Error" << endl;
-        cout.flush();
-        return 0;
-    }
-
-    char *line;
-    // For each file name in the file list ...
-    while(fgets(line, 50, file)) { // Retrieves a line in file
-
-        /* If number of threads gets to maximum, then wait until 
-            at least one cild thread finishes */
-        while((num_active_threads >= num_allowed_threads) && (!serialMode)) {
-            // Obtain ID of the oldest thread
-            BeginRegion();
-            pthread_t curr_thrID;
-            queueDequeue(&curr_thrID);
-            EndRegion();
-
-            // Wait for the thread to finish
-            (void)pthread_join(curr_thrID, NULL);
-
-            // Decrement number of active threads
-            BeginRegion();
-            num_active_threads--;
-            EndRegion();
-        }
-
-        // Extract out the file name
-        const char delimiters[] = " \n";
-        char* current_file_name = strtok(line, delimiters);
-
-        // If no file name, then assume end of file and stop reading files
-        if(current_file_name == NULL) {
-            break;
-        }
-        
-        // Copy file name into the file name array
-        BeginRegion();
-        strcpy(fileName_Array[fileIndex], current_file_name);
-        EndRegion();
-
-        // cout << "Current file is: " << fileName_Array[fileIndex] << endl;
-
-        
-        if(serialMode) { // Default mode: NO threads
-            defaultFunction(fileName_Array[fileIndex]);
-            fileIndex = (fileIndex + 1) % MAX_NUM_THREADS;
-        }
-        else { // Thread mode
-            
-            // Create thread and give it appropriate file name
-            if (pthread_create(&thrIDArray[fileIndex], NULL, threadFunction, (void *) fileIndex) != 0) {
-                perror("pthread_create");
-                exit(1);
-            }
- 
-            // Enqueue thread ID and increment number of active threads
-            BeginRegion();
-            num_active_threads++;
-            queueEnqueue(&thrIDArray[fileIndex]);
-            EndRegion();
-
-            // Increment the file index and account for array-looping
-            fileIndex = (fileIndex + 1) % num_allowed_threads;
-        }
-
-    } // End of while loop
-
-    // At this point the program has stopped reading the file
-    cout << "File reading is done" << endl;
-
-    // Wait for and join any threads still running
-    while(!isEmpty()) {
-        pthread_t curr_thrID;
-        queueDequeue(&curr_thrID);
-        (void)pthread_join(curr_thrID, NULL);
-    }
-
-    // Print the values of the counter variables
-    print_results();
-
-    return 0;
 }
 
-/* Error message for inputs */
-void print_help(void) {
-    cout << "Without thread EX:  ./proj4 fileList.txt" << endl;
-    cout << "With thread EX:     ./proj4 fileList.txt thread 5" << endl;
-    cout.flush();
+void dequeue(pthread_t *ptr_thrID) {
+    if(is_empt()) {
+        cerr << "Queue is empty" << endl;
+        cerr.flush();
+    }
+    else {
+        *ptr_thrID = thread_queue[q_front];
+        q_size--;
+        q_front = (q_front + 1) % MAX_QUEUE;
+    }
 }
 
-/* Checks if input string is an integer */
-bool isNumber(string s) {
-    for (int i = 0; i < s.length(); i++)
-        if (isdigit(s[i]) == false)
+/* ------------------------------------------- Functions ------------------------------------------- */
+
+void print_help() {
+    cerr << "./proj4 only accepts either stdin or 2 arguments." << endl;
+    cerr << "Program also allows pipe as input." << endl;
+    cerr << "Usage: ./proj4 [optional: \"thread\" <number>]" << endl;
+    cerr << "Example: ./proj4" << endl;
+    cerr << "         ls -1d /dev/* | ./proj4" << endl;
+    cerr << "         ./proj4 thread 7" << endl;
+    cerr << "         ls -1d /dev/* | ./proj4 thread 7" << endl;
+    cerr.flush();
+    exit(1);
+}
+
+void print_results() {
+    cout << "Bad Files " << bad_files << endl;
+    cout << "Directories: " << directories << endl;
+    cout << "Regular Files: " << regular_files << endl;
+    cout << "Special Files: " << special_files << endl;
+    cout << "Regular Files Bytes: " << regular_files_size << endl;
+    cout << "Text Files: " << text_files << endl;
+    cout << "Text Files Bytes: " << text_files_size << endl;
+}
+
+bool is_integer(char *str) {
+    for (int i = 0; i < strlen(str); i++) {
+        if (!isdigit(str[i])) {
             return false;
- 
+        }
+    }
     return true;
 }
 
-/* Print the file statistics */
-void print_results(void) {
-    cout << "Number of bad files: " << num_bad_files << endl;
-    cout << "Number of directories: " << num_directories << endl;
-    cout << "Number of regular files: " << num_regular_files << endl;
-    cout << "Number of special files: " << num_special_files << endl;
-    cout << "Total bytes used by regular files: " << total_bytes_reg_files << endl;
-    cout << "Number of regular files with only text: " << num_reg_files_just_text << endl;
-    cout << "Total bytes used by just text files: " << total_bytes_text_file << endl;
-}
-
-/* Function for starting critical region */
-void BeginRegion(void) {
+void begin_region() {
     while(mutex);
-    mutex = TRUE;
+    mutex = true;
 }
 
-/* Function for ending critical region */
-void EndRegion(void) {
-    mutex = FALSE;
+void end_region() {
+    mutex = false;
 }
 
-/* Open the given file, returns the file descriptor */
-int openFile(char *fileName) {
-    int file_descriptor = open(fileName, O_RDONLY);
-    if(file_descriptor < 0) { 
-        cout << "File Open error" << endl;
-        cout.flush();
-    }
-    return file_descriptor;
-}
+void process_regular(char *file) {
+    char buffer[MAX_BYTE_READ + 1] = {'\0'};
+    bool text_flag = true;
+    int file_descriptor = open(file, O_RDONLY);
+    int total_bytes = 0;
+    int bytes_read;
 
-/* The default behavior of the program, no child threads */
-void defaultFunction(char *fileName) {
-
-    // File statistics struct
-    struct stat statBuffer;
-
-    /* Processes the file for approprite file statistics */
-    if((stat(fileName, &statBuffer)) == 0) { // If the file is good ...
-
-        if(S_ISDIR(statBuffer.st_mode)) { // Directory File
-            // Increment the directories counter
-            BeginRegion();
-            num_directories++;
-            EndRegion();
-        }
-        else if(S_ISREG(statBuffer.st_mode)) { // Regular File
-            // Increment the regular file counter 
-            BeginRegion();
-            num_regular_files++;
-            EndRegion();
-
-            // Opens the filename
-            int file_descriptor = openFile(fileName);
-
-            // initialize the buffer array
-            char strBuffer[MAX_BYTE + 1] = {'\0'};
-
-            /* Read the file in chunks and count number of bytes of text */
-            bool is_just_text = true; // just-text flag
-            int bytes_read = read(file_descriptor, strBuffer, MAX_BYTE);
-            while(bytes_read > 0) { // while there are still bytes to read ...
-                
-                // Temporary byte counter for text
-                int textBytes = 0;
-                
-                /* For every byte read, check if it is printable or a space, if not
-                    signal the just-text flag */
-                for(int i = 0; i < bytes_read; i++) {
-                    if(isprint(strBuffer[i]) || isspace(strBuffer[i])) {
-                        textBytes++;
-                    }
-                    else {
-                        is_just_text = false;
-                    }
-                }
-
-                // Update the necessary global counters
-                BeginRegion();
-                total_bytes_reg_files += bytes_read;
-                total_bytes_text_file += textBytes;
-                EndRegion();
-
-                // Read next chunk of bytes
-                bytes_read = read(file_descriptor, strBuffer, MAX_BYTE);
+    while((bytes_read = read(file_descriptor, buffer, MAX_BYTE_READ)) > 0) {
+        
+        // Check if byte is printable
+        for(int i = 0; i < bytes_read; i++) {
+            if (!(isprint(buffer[i]) || isspace(buffer[i]))) {
+                text_flag = false;
             }
-
-            // If file is just text, increment the just-text counter
-            if(is_just_text) {
-                BeginRegion();
-                num_reg_files_just_text++;
-                EndRegion();
-            }
-
-            // Close the file
-            close(file_descriptor);
-
         }
-        else {  // If the file is special ...
-            // Increment the special file counter
-            BeginRegion();
-            num_special_files++;
-            EndRegion();
-        }
+
+        total_bytes += bytes_read;
     }
-    else {  // If the file is bad
-        // Increment the bad file counter
-        BeginRegion();
-        cout << "Bad File!" << endl;
-        num_bad_files++;
-        EndRegion();
+
+    // Increment Regular File Size
+    begin_region();
+    regular_files_size += total_bytes;
+    end_region();
+
+    // Increment Text Files and File size
+    if(text_flag) {
+        begin_region();
+        text_files_size += total_bytes;
+        text_files++;
+        end_region();
     }
+
+    // Close the file
+    close(file_descriptor);
 }
 
+void serial_func(char *file) {
+    struct stat statistic;
+
+    if((stat(file, &statistic)) == 0) {
+        // File is good
+
+        if(S_ISDIR(statistic.st_mode)) { 
+            // Directory File
+            begin_region();
+            directories++;
+            end_region();
+        }
+        else if(S_ISREG(statistic.st_mode)) { 
+            // Regular File
+            begin_region();
+            regular_files++;
+            end_region();
+
+            process_regular(file);
+
+        }
+        else {
+            // File is special
+            begin_region();
+            special_files++;
+            end_region();
+        }
+    }
+    else {
+        // File is bad
+        begin_region();
+        bad_files++;
+        end_region();
+    }
+}
 
 void *threadFunction(void *arg) {
-    // File statistics struct
-    struct stat statBuffer;
-    long providedFileIndex = (long)arg;
+    struct stat statistic;
+    long idx = (long) arg;
 
-    /* Processes the file for approprite file statistics */
-    if((stat(fileName_Array[providedFileIndex], &statBuffer)) == 0) { 
-        // If the file is good ...
+    serial_func(file_arr[idx]);
+}
 
-        if(S_ISDIR(statBuffer.st_mode)) { // Directory File
-            // Increment the directories counter
-            BeginRegion();
-            num_directories++;
-            EndRegion();
-        }
-        else if(S_ISREG(statBuffer.st_mode)) { // Regular File
-            // Increment the regular file counter 
-            BeginRegion();
-            num_regular_files++;
-            EndRegion();
+int main(int argc, char *argv[]) {
+    // General Variables
+    FILE* current_file;
+    char *file_list = argv[1];
+    char *current_line = new char[MAX_BYTE_READ];
+    bool serial_flag = false;
+    int working_threads = 0;
+    int num_threads;
 
-
-            // Opens the filename
-            int file_descriptor = openFile(fileName_Array[providedFileIndex]);
-
-            // Initialize the buffer array
-            char strBuffer[MAX_BYTE + 1] = {'\0'};
-
-            /* Read the file in chunks and count number of bytes of text */
-            bool is_just_text = true; // Just-text flag
-            int bytes_read = read(file_descriptor, strBuffer, MAX_BYTE);
-            while(bytes_read > 0) { // While there are still bytes to read ...
-                
-                // Temporary byte counter for text
-                int textBytes = 0;
-                
-                /* For every byte read, check if it is printable or a space, if not
-                    signal the just-text flag */
-                for(int i = 0; i < bytes_read; i++) {
-                    if(isprint(strBuffer[i]) || isspace(strBuffer[i])) {
-                        textBytes++;
-                    }
-                    else {
-                        is_just_text = false;
-                    }
+    // Argument handling
+    if(argc == 1) {
+        serial_flag = true;
+    }
+    else if(argc == 3) {
+        if (strcmp(argv[1], "thread") == 0) {
+            if(!is_integer(argv[2])) {
+                cerr << "Error: Invalid first argument" << endl;
+                print_help();
+            }
+            else {
+                num_threads = atoi(argv[2]);
+                if((num_threads < 1) || (num_threads > MAX_THREADS)){
+                    cerr << "Error: Invalid number of threads" << endl;
+                    print_help();
                 }
-
-                // Update the necessary global counters
-                BeginRegion();
-                total_bytes_reg_files += bytes_read;
-                total_bytes_text_file += textBytes;
-                EndRegion();
-
-                // Read next chunk of bytes
-                bytes_read = read(file_descriptor, strBuffer, MAX_BYTE);
             }
-
-            // If file is just text, increment the just-text counter
-            if(is_just_text) {
-                BeginRegion();
-                num_reg_files_just_text++;
-                EndRegion();
-            }
-
-            // Close the file
-            close(file_descriptor);
-
-        }
-        else {  // If the file is special ...
-            // Increment the special file counter
-            BeginRegion();
-            num_special_files++;
-            EndRegion();
         }
     }
-    else {  // If the file is bad
-        // Increment the bad file counter
-        BeginRegion();
-        cout << "Bad File!" << endl;
-        num_bad_files++;
-        EndRegion();
-    }
-}
-
-
-void queueEnqueue(pthread_t *ptr_thrID) {
-    if(isFull()) {
-        cout << "Queue is full!" << endl;
-    }
     else {
-        queueBack = (queueBack + 1) % MAX_QUEUE_SIZE;
-        thrIDQueue[queueBack] = (*ptr_thrID);
-        queueSize++;
+        print_help();
     }
-}
 
+    // Get each file from file list
+    while(cin.getline(current_line, MAX_BYTE_READ)) {
+        if (!serial_flag) {
+            // Wait for available thread
+            while (working_threads >= num_threads) {
+                begin_region();
+                pthread_t current_thread;
+                dequeue(&current_thread);
+                end_region();
 
-bool queueDequeue(pthread_t *ptr_thrID) {
-    if(queueSize == 0) {
-        cout << "Queue is empty!" << endl;
-        return 0;
+                // Wait for the thread to finish
+                (void) pthread_join(current_thread, NULL);
+                begin_region();
+                working_threads--;
+                end_region();
+            }
+        }
+
+        char* current_file = strtok(current_line, " \n");
+        if(current_file == NULL) {
+            break;
+        }
+        
+        // Put current file into file array
+        begin_region();
+        strcpy(file_arr[file_idx], current_file);
+        end_region();
+        
+        if(serial_flag) {
+            serial_func(file_arr[file_idx]);
+            file_idx = (file_idx + 1) % MAX_THREADS;
+        }
+        else {
+            // Create thread and operate on the files
+            if (pthread_create(&thread_arr[file_idx], NULL, threadFunction, (void *) (long) file_idx) != 0) {
+                cerr << "Error: pthread creation" << endl;
+                exit(1);
+            }
+ 
+            // Increment working thread
+            begin_region();
+            working_threads++;
+            enqueue(&thread_arr[file_idx]);
+            end_region();
+
+            file_idx = (file_idx + 1) % num_threads;
+        }
+
     }
-    else {
-        (*ptr_thrID) = thrIDQueue[queueFront];
 
-        queueSize--;
-        queueFront = (queueFront + 1) % MAX_QUEUE_SIZE;
+    // Clean up
+    while(!is_empt()) {
+        pthread_t current_thread;
+        dequeue(&current_thread);
+        (void)pthread_join(current_thread, NULL);
     }
-    return 1;
-}
 
-/* Determines if the thread ID queue is full */
-int isFull() {
-    return (queueSize == MAX_QUEUE_SIZE);
-}
+    print_results();
 
-/* Determines if the thread ID queue is empty */
-int isEmpty() {
-    return (queueSize == 0);
+    return 0;
 }
