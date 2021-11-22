@@ -29,6 +29,7 @@ void print_help() {
     cerr << "Example: ./proj2 foo.txt f" << endl;
     cerr << "         ./proj2 foo.txt f 511" << endl;
     cerr << "         ./proj2 foo.txt f mmap" << endl;
+    cerr << "         ./proj2 foo.txt f p8" << endl;
     cerr.flush();
 }
 
