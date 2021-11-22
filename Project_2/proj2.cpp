@@ -25,7 +25,7 @@ bool is_integer(char *str) {
 
 void print_help() {
     cerr << "./proj2 only accepts either 2 or 3 arguments." << endl;
-    cerr << "Usage: ./proj2 <source file> <seach character> [optional: <size|mmap>]" << endl;
+    cerr << "Usage: ./proj2 <source file> <search character> [optional: <size|mmap|child_num>]" << endl;
     cerr << "Example: ./proj2 foo.txt f" << endl;
     cerr << "         ./proj2 foo.txt f 511" << endl;
     cerr << "         ./proj2 foo.txt f mmap" << endl;
